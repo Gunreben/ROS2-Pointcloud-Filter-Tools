@@ -48,10 +48,32 @@ ament_target_dependencies(combined_lidar_filter_node
 )
 target_link_libraries(combined_lidar_filter_node ${PCL_LIBRARIES})
 
+# ZED alpha filter node
+add_executable(zed_alpha_filter_node src/zed_alpha_filter_node.cpp)
+ament_target_dependencies(zed_alpha_filter_node
+  ${LIDAR_FILTER_DEPS}
+)
+target_link_libraries(zed_alpha_filter_node ${PCL_LIBRARIES})
+
+# Outlier filter node (no PCL, very fast)
+add_executable(outlier_filter_node src/outlier_filter_node.cpp)
+ament_target_dependencies(outlier_filter_node
+  rclcpp
+  sensor_msgs
+)
+
 # Install targets
 install(TARGETS
   combined_lidar_filter_node
+  zed_alpha_filter_node
+  outlier_filter_node
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# Install launch files
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME}/
 )
 
 # Testing
