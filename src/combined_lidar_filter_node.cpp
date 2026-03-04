@@ -31,8 +31,8 @@ public:
 
     // Box filter parameters
     this->declare_parameter<bool>("enable_box_filter", true);
-    this->declare_parameter<std::vector<float>>("min_point", std::vector<float>{-2.0, 0.0, -0.2});
-    this->declare_parameter<std::vector<float>>("max_point", std::vector<float>{2.0, 3.0, 2.5});
+    this->declare_parameter<std::vector<float>>("min_point", std::vector<float>{-1.6, -2.4, -0.2});
+    this->declare_parameter<std::vector<float>>("max_point", std::vector<float>{1.6, 2.8, 3.2});
     this->declare_parameter<bool>("box_filter_negative", true);
 
     // Ground filter parameters
