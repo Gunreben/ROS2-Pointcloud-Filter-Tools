@@ -88,41 +88,30 @@ private:
     // Load common parameters
     input_topic_ = this->get_parameter("input_topic").as_string();
     output_topic_ = this->get_parameter("output_topic").as_string();
-    if (this->has_parameter("target_frame")) {
-      target_frame_ = this->get_parameter("target_frame").as_string();
-    }
-    
-    // Load aperture filter parameters
+    target_frame_ = this->get_parameter("target_frame").as_string();
+
+    // Always load every filter's parameters (not just enabled ones), so
+    // enabling a filter at runtime starts from fully initialized values.
     enable_aperture_filter_ = this->get_parameter("enable_aperture_filter").as_bool();
-    if (enable_aperture_filter_) {
-      min_azimuth_angle_ = this->get_parameter("min_azimuth_angle").as_double();
-      max_azimuth_angle_ = this->get_parameter("max_azimuth_angle").as_double();
-      min_elevation_angle_ = this->get_parameter("min_elevation_angle").as_double();
-      max_elevation_angle_ = this->get_parameter("max_elevation_angle").as_double();
+    min_azimuth_angle_ = this->get_parameter("min_azimuth_angle").as_double();
+    max_azimuth_angle_ = this->get_parameter("max_azimuth_angle").as_double();
+    min_elevation_angle_ = this->get_parameter("min_elevation_angle").as_double();
+    max_elevation_angle_ = this->get_parameter("max_elevation_angle").as_double();
+    min_azimuth_rad_ = min_azimuth_angle_ * M_PI / 180.0;
+    max_azimuth_rad_ = max_azimuth_angle_ * M_PI / 180.0;
+    min_elevation_rad_ = min_elevation_angle_ * M_PI / 180.0;
+    max_elevation_rad_ = max_elevation_angle_ * M_PI / 180.0;
 
-      // Convert angles to radians
-      min_azimuth_rad_ = min_azimuth_angle_ * M_PI / 180.0;
-      max_azimuth_rad_ = max_azimuth_angle_ * M_PI / 180.0;
-      min_elevation_rad_ = min_elevation_angle_ * M_PI / 180.0;
-      max_elevation_rad_ = max_elevation_angle_ * M_PI / 180.0;
-    }
-
-    // Load box filter parameters
     enable_box_filter_ = this->get_parameter("enable_box_filter").as_bool();
-    if (enable_box_filter_) {
-      min_point_ = this->get_parameter("min_point").as_double_array();
-      max_point_ = this->get_parameter("max_point").as_double_array();
-      box_filter_negative_ = this->get_parameter("box_filter_negative").as_bool();
-    }
+    min_point_ = this->get_parameter("min_point").as_double_array();
+    max_point_ = this->get_parameter("max_point").as_double_array();
+    box_filter_negative_ = this->get_parameter("box_filter_negative").as_bool();
 
-    // Load ground filter parameters
     enable_ground_filter_ = this->get_parameter("enable_ground_filter").as_bool();
-    if (enable_ground_filter_) {
-      distance_threshold_ = this->get_parameter("distance_threshold").as_double();
-      optimize_coefficients_ = this->get_parameter("optimize_coefficients").as_bool();
-      max_iterations_ = this->get_parameter("max_iterations").as_int();
-      angle_threshold_ = this->get_parameter("angle_threshold").as_double();
-    }
+    distance_threshold_ = this->get_parameter("distance_threshold").as_double();
+    optimize_coefficients_ = this->get_parameter("optimize_coefficients").as_bool();
+    max_iterations_ = this->get_parameter("max_iterations").as_int();
+    angle_threshold_ = this->get_parameter("angle_threshold").as_double();
   }
 
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr cloud_msg)
@@ -359,30 +348,43 @@ private:
   rcl_interfaces::msg::SetParametersResult parameterCallback(
     const std::vector<rclcpp::Parameter>& parameters)
   {
+    // This callback runs BEFORE the new values are committed to the
+    // node, so we must apply from the incoming vector — get_parameter()
+    // would still return the old values here.
     auto result = rcl_interfaces::msg::SetParametersResult();
     result.successful = true;
 
-    bool needs_param_reload = false;
+    bool angles_changed = false;
     for (const auto& param : parameters) {
-      if (param.get_name().find("min_") != std::string::npos ||
-          param.get_name().find("max_") != std::string::npos ||
-          param.get_name().find("enable_") != std::string::npos ||
-          param.get_name() == "target_frame" ||
-          param.get_name() == "distance_threshold" ||
-          param.get_name() == "optimize_coefficients" ||
-          param.get_name() == "max_iterations" ||
-          param.get_name() == "angle_threshold") {
-        needs_param_reload = true;
-      }
+      const auto& name = param.get_name();
+      if (name == "target_frame") target_frame_ = param.as_string();
+      else if (name == "enable_aperture_filter") enable_aperture_filter_ = param.as_bool();
+      else if (name == "min_azimuth_angle") { min_azimuth_angle_ = param.as_double(); angles_changed = true; }
+      else if (name == "max_azimuth_angle") { max_azimuth_angle_ = param.as_double(); angles_changed = true; }
+      else if (name == "min_elevation_angle") { min_elevation_angle_ = param.as_double(); angles_changed = true; }
+      else if (name == "max_elevation_angle") { max_elevation_angle_ = param.as_double(); angles_changed = true; }
+      else if (name == "enable_box_filter") enable_box_filter_ = param.as_bool();
+      else if (name == "min_point") min_point_ = param.as_double_array();
+      else if (name == "max_point") max_point_ = param.as_double_array();
+      else if (name == "box_filter_negative") box_filter_negative_ = param.as_bool();
+      else if (name == "enable_ground_filter") enable_ground_filter_ = param.as_bool();
+      else if (name == "distance_threshold") distance_threshold_ = param.as_double();
+      else if (name == "optimize_coefficients") optimize_coefficients_ = param.as_bool();
+      else if (name == "max_iterations") max_iterations_ = static_cast<int>(param.as_int());
+      else if (name == "angle_threshold") angle_threshold_ = param.as_double();
     }
 
-    if (needs_param_reload) {
-      loadParameters();
-      RCLCPP_INFO(this->get_logger(), "Parameters updated - Filters: Aperture=%s, Box=%s, Ground=%s",
-                  enable_aperture_filter_ ? "enabled" : "disabled",
-                  enable_box_filter_ ? "enabled" : "disabled",
-                  enable_ground_filter_ ? "enabled" : "disabled");
+    if (angles_changed) {
+      min_azimuth_rad_ = min_azimuth_angle_ * M_PI / 180.0;
+      max_azimuth_rad_ = max_azimuth_angle_ * M_PI / 180.0;
+      min_elevation_rad_ = min_elevation_angle_ * M_PI / 180.0;
+      max_elevation_rad_ = max_elevation_angle_ * M_PI / 180.0;
     }
+
+    RCLCPP_INFO(this->get_logger(), "Parameters updated - Filters: Aperture=%s, Box=%s, Ground=%s",
+                enable_aperture_filter_ ? "enabled" : "disabled",
+                enable_box_filter_ ? "enabled" : "disabled",
+                enable_ground_filter_ ? "enabled" : "disabled");
 
     return result;
   }
@@ -400,28 +402,28 @@ private:
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   // Aperture filter members
-  bool enable_aperture_filter_;
-  double min_azimuth_angle_, max_azimuth_angle_;
-  double min_elevation_angle_, max_elevation_angle_;
-  double min_azimuth_rad_, max_azimuth_rad_;
-  double min_elevation_rad_, max_elevation_rad_;
+  bool enable_aperture_filter_ {false};
+  double min_azimuth_angle_ {0.0}, max_azimuth_angle_ {0.0};
+  double min_elevation_angle_ {0.0}, max_elevation_angle_ {0.0};
+  double min_azimuth_rad_ {0.0}, max_azimuth_rad_ {0.0};
+  double min_elevation_rad_ {0.0}, max_elevation_rad_ {0.0};
 
   // Box filter members
-  bool enable_box_filter_;
+  bool enable_box_filter_ {false};
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub_;
   rclcpp::TimerBase::SharedPtr marker_timer_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr aperture_marker_pub_;
   rclcpp::TimerBase::SharedPtr aperture_marker_timer_;
   std::vector<double> min_point_;
   std::vector<double> max_point_;
-  bool box_filter_negative_;
+  bool box_filter_negative_ {true};
 
   // Ground filter members
-  bool enable_ground_filter_;
-  double distance_threshold_;
-  bool optimize_coefficients_;
-  int max_iterations_;
-  double angle_threshold_;
+  bool enable_ground_filter_ {false};
+  double distance_threshold_ {0.2};
+  bool optimize_coefficients_ {true};
+  int max_iterations_ {100};
+  double angle_threshold_ {15.0};
 };
 
 int main(int argc, char* argv[])

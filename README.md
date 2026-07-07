@@ -1,325 +1,137 @@
-# ROS2 Pointcloud Filter Tools
+# ROS2 Pointcloud Filter Tools (`lidar_filter`)
 
-A comprehensive ROS 2 package providing modular point cloud filtering capabilities for depth cameras and LiDAR sensors. Designed for real-time performance with flexible, chainable filter nodes.
+Modular ROS 2 point cloud filter nodes, chainable per topic. Package
+name: **`lidar_filter`** (repo name differs — clone into your workspace
+and build with `colcon build --packages-select lidar_filter`).
 
-## Overview
+Three independent nodes:
 
-This package provides efficient point cloud filtering nodes that can be used individually or chained together for comprehensive point cloud cleanup:
+| Node | Purpose | Typical input |
+|------|---------|---------------|
+| `combined_lidar_filter_node` | Aperture (FOV) + box (robot body) + RANSAC ground removal for spinning lidars | Ouster/Velodyne clouds |
+| `outlier_filter_node` | Fast voxel-hash outlier removal, O(n), no PCL trees | any PointCloud2 |
+| `zed_alpha_filter_node` | Drop low-confidence points via the alpha channel of ZED RGBA clouds | ZED `cloud_registered` |
 
-1. **`zed_alpha_filter_node`** - Filters points based on alpha channel (confidence) values
-2. **`outlier_filter_node`** ⚡ - Fast voxel-based outlier removal (RECOMMENDED)
-3. **`combined_lidar_filter_node`** - Multi-purpose filter for traditional LiDAR (aperture, box, ground plane)
+## combined_lidar_filter_node
 
-## Quick Start
+The workhorse for the tractor stack: feeds `obstacle_detection` with a
+cleaned cloud (`/ouster/points` → `/ouster/points/filtered`).
 
-### Run the Complete Cleanup Pipeline
+Processing order per frame:
+1. Optional transform into `target_frame` (TF; skipped with a warning if
+   the transform is unavailable — the output header always states the
+   true frame).
+2. **Aperture filter** — keep points inside an azimuth/elevation window.
+   Azimuth is measured around **+Y = forward** (matches this rig's
+   mesh-derived frame convention; see note below).
+3. **Box filter** — `pcl::CropBox`; with `box_filter_negative: true`
+   (default) it *removes* the box interior, i.e. the vehicle's own body.
+4. **Ground filter** — single-plane RANSAC (z-axis constrained by
+   `angle_threshold`), removes inliers.
 
-The easiest way to get started is using the cleanup launch file, which chains the alpha filter and outlier filter:
+### Parameters
 
-```bash
-# Launch the complete filtering pipeline
-ros2 launch lidar_filter cleanup.launch.py
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `input_topic` | `ouster/points` | PointCloud2 input |
+| `output_topic` | `ouster/points/filtered` | PointCloud2 output |
+| `target_frame` | `base_link` | Transform target (empty = keep input frame) |
+| `enable_aperture_filter` | true | |
+| `min_azimuth_angle` / `max_azimuth_angle` | −20 / 20 | deg, around +Y forward |
+| `min_elevation_angle` / `max_elevation_angle` | −45 / 45 | deg |
+| `enable_box_filter` | true | |
+| `min_point` / `max_point` | tractor body box | `[x, y, z]` in `target_frame` (m) |
+| `box_filter_negative` | true | true = remove inside (self-filter) |
+| `enable_ground_filter` | true | |
+| `distance_threshold` | 0.2 | RANSAC inlier distance (m) |
+| `max_iterations` | 100 | RANSAC iterations |
+| `angle_threshold` | 15.0 | max plane tilt vs z-axis (deg) |
+| `optimize_coefficients` | true | |
 
-# Input:  /zed/zed_node/point_cloud/cloud_registered
-# Output: /zed/zed_node/point_cloud/cloud_registered/filtered
-```
+All parameters are runtime-tunable (`ros2 param set …`); changes apply
+immediately, including derived values (angle radians) and filters that
+were disabled at startup.
 
-This pipeline:
-1. Filters low-confidence points using alpha channel
-2. Removes outliers using fast voxel-based filtering
+Debug outputs: `filter_box_marker` and `aperture_filter_marker`
+(`visualization_msgs/Marker`, published at 2 Hz when the respective
+filter is enabled).
 
-### Run Individual Filters
+**Frame convention note:** on the vario700 rig the TF tree follows the
+Farming-Simulator-derived mesh orientation (y ≈ forward). The aperture
+filter's azimuth reference assumes this. If you use this node on a
+REP-103 rig (x forward), adapt the azimuth math or window accordingly.
 
-You can also run filters individually for custom pipelines:
+### Performance
 
-```bash
-# Alpha channel filter only
-ros2 run lidar_filter zed_alpha_filter_node \
-  --ros-args \
-  -p input_topic:=/zed/zed_node/point_cloud/cloud_registered \
-  -p output_topic:=/zed/point_cloud/filtered
+The ground RANSAC dominates runtime on large clouds (~131k-point Ouster
+frames). On embedded targets consider `max_iterations: 25–50`, or run
+the box/aperture filters first (they shrink the cloud before RANSAC —
+this is the built-in order already).
 
-# Outlier filter only
-ros2 run lidar_filter outlier_filter_node \
-  --ros-args \
-  -p input_topic:=/zed/point_cloud/filtered \
-  -p output_topic:=/zed/point_cloud/clean
-```
+## outlier_filter_node
 
-## Filter Nodes
+Ultra-fast outlier removal using a voxel hash (no KD-tree, no PCL
+conversion): removes NaN/Inf, out-of-range coordinates, and points in
+sparsely populated voxels. ~5–15 ms on a ~45k-point cloud.
 
-### 1. Alpha Filter (`zed_alpha_filter_node`)
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `input_topic` | `/zed/zed_node/point_cloud/cloud_registered` | |
+| `output_topic` | `/zed/point_cloud/outlier_filtered` | |
+| `voxel_size` | 0.05 | m; smaller = more aggressive |
+| `min_points_per_voxel` | 2 | higher = more aggressive |
+| `max_valid_range` | 100.0 | m, coordinate sanity bound |
+| `enable_voxel_filter` | true | false = only NaN/Inf/range cleanup |
 
-**Purpose:** Filter points based on alpha channel (confidence) values from depth cameras.
+Tuning: indoor/close range `voxel_size` 0.03–0.05, outdoor 0.05–0.1.
 
-**What it filters:**
-- ✅ Low-confidence depth measurements
-- ✅ Points with alpha channel not matching threshold
+## zed_alpha_filter_node
 
-**Parameters:**
+Keeps only points whose alpha (confidence) channel equals
+`alpha_threshold` (default 255). Only meaningful for RGBA clouds.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `input_topic` | string | `/zed/zed_node/point_cloud/cloud_registered` | Input point cloud topic |
-| `output_topic` | string | `/zed/point_cloud/filtered` | Output point cloud topic |
-| `alpha_threshold` | int | 255 | Alpha value to keep (typically 255 for fully opaque) |
+| Parameter | Default |
+|-----------|---------|
+| `input_topic` | `/zed/zed_node/point_cloud/cloud_registered` |
+| `output_topic` | `/zed/point_cloud/filtered` |
+| `alpha_threshold` | 255 |
 
-**Example usage:**
+## Launch files
 
-```bash
-# Basic usage with defaults
-ros2 run lidar_filter zed_alpha_filter_node
+- `cleanup.launch.py` — ZED cleanup chain: alpha filter → outlier
+  filter (`/zed/zed_node/point_cloud/cloud_registered` →
+  `…/cloud_registered/filtered`).
+- For the tractor obstacle-detection stack, `combined_lidar_filter_node`
+  is launched by `obstacle_detection`'s
+  `safety_zone_visualizer_stack.launch.py`.
 
-# With custom parameters
-ros2 run lidar_filter zed_alpha_filter_node \
-  --ros-args \
-  -p alpha_threshold:=250
-```
-
----
-
-### 2. Outlier Filter (`outlier_filter_node`) ⚡ RECOMMENDED
-
-**Purpose:** Ultra-fast outlier removal using voxel grid. Best choice for real-time applications.
-
-**What it filters:**
-- ✅ NaN and Inf points (automatically)
-- ✅ Out-of-range points
-- ✅ Isolated points (points in sparse voxels)
-- ✅ Scattered artifacts
-
-**How it works:**
-1. Divides 3D space into voxels (cubes of size `voxel_size`)
-2. Counts points in each voxel
-3. Removes points in voxels with fewer than `min_points_per_voxel` points
-
-**Advantages:**
-- ⚡ **10-50x faster** than PCL-based filters (5-10ms per frame)
-- No KD-tree building (just hash table lookups)
-- Works directly on PointCloud2 (no PCL conversion overhead)
-- Linear time complexity O(n)
-- Real-time capable (30+ Hz on large clouds)
-
-**Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `input_topic` | string | `/zed/zed_node/point_cloud/cloud_registered` | Input point cloud topic |
-| `output_topic` | string | `/zed/point_cloud/outlier_filtered` | Output point cloud topic |
-| `voxel_size` | double | 0.05 | Voxel cube size in meters |
-| `min_points_per_voxel` | int | 2 | Min points in voxel to keep |
-| `max_valid_range` | double | 100.0 | Max coordinate value in meters |
-| `enable_voxel_filter` | bool | true | Enable voxel filtering |
-
-**Example usage:**
+Example standalone run:
 
 ```bash
-# Default settings (good for most cases)
-ros2 run lidar_filter outlier_filter_node
-
-# Aggressive outlier removal
-ros2 run lidar_filter outlier_filter_node \
-  --ros-args \
-  -p voxel_size:=0.03 \
-  -p min_points_per_voxel:=3
-
-# Less aggressive (preserve more edge points)
-ros2 run lidar_filter outlier_filter_node \
-  --ros-args \
-  -p voxel_size:=0.1 \
-  -p min_points_per_voxel:=1
-
-# Only NaN/Inf/range filtering (no outlier detection)
-ros2 run lidar_filter outlier_filter_node \
-  --ros-args \
-  -p enable_voxel_filter:=false
+ros2 run lidar_filter combined_lidar_filter_node --ros-args \
+  -p input_topic:=/ouster/points \
+  -p output_topic:=/ouster/points/filtered \
+  -p enable_aperture_filter:=false
 ```
-
-**Tuning tips:**
-
-For **voxel_size**:
-- Smaller (0.03m) = catches smaller isolated points, more aggressive
-- Larger (0.1m) = only removes very isolated clusters, less aggressive
-- Match to scene detail: indoor/close = 0.03-0.05m, outdoor = 0.05-0.1m
-
-For **min_points_per_voxel**:
-- Higher (3-5) = more aggressive, removes more outliers
-- Lower (1-2) = less aggressive, preserves more edge points
-- Use 2 as default (removes true isolated points, keeps surfaces)
-
----
-
-### 3. Combined LiDAR Filter (`combined_lidar_filter_node`)
-
-**Purpose:** Multi-purpose filter for traditional spinning LiDAR sensors (Ouster, Velodyne, etc.).
-
-**Capabilities:**
-- Aperture filtering (field of view restriction)
-- Box filtering (remove robot body, specific regions)
-- Ground plane removal (RANSAC-based)
-
-See source code for detailed parameter documentation.
-
----
-
-## Custom Launch Files
-
-Create your own custom filtering pipeline by creating a launch file:
-
-```python
-# my_custom_filter.launch.py
-from launch import LaunchDescription
-from launch_ros.actions import Node
-
-def generate_launch_description():
-    return LaunchDescription([
-        # Stage 1: Alpha filter
-        Node(
-            package='lidar_filter',
-            executable='zed_alpha_filter_node',
-            name='alpha_filter',
-            parameters=[{
-                'input_topic': '/zed/zed_node/point_cloud/cloud_registered',
-                'output_topic': '/zed/point_cloud/alpha_filtered',
-                'alpha_threshold': 255,
-            }],
-            output='screen',
-        ),
-        
-        # Stage 2: Outlier filter with custom parameters
-        Node(
-            package='lidar_filter',
-            executable='outlier_filter_node',
-            name='outlier_filter',
-            parameters=[{
-                'input_topic': '/zed/point_cloud/alpha_filtered',
-                'output_topic': '/zed/point_cloud/clean',
-                'voxel_size': 0.03,
-                'min_points_per_voxel': 3,
-            }],
-            output='screen',
-        ),
-    ])
-```
-
-Run with:
-```bash
-ros2 launch <your_package> my_custom_filter.launch.py
-```
-
----
-
-## Performance Considerations
-
-### Processing Speed
-
-Approximate processing times (for 640×360 ZED cloud with ~45k valid points):
-
-| Filter | Speed | Notes |
-|--------|-------|-------|
-| `zed_alpha_filter` | ~5ms | PCL conversion overhead |
-| `outlier_filter` ⚡ | ~5-15ms | **RECOMMENDED**, hash table only |
-
-**Real-world example:**
-- Outlier filter: 8ms → **125 Hz capable**
-
-### Memory Usage
-
-- Alpha filter: Low (streaming with PCL buffer)
-- Outlier filter: Low (hash table only, ~1-2 MB)
-
-### Filter Order Recommendation
-
-For best performance, chain filters in this order:
-
-1. **`zed_alpha_filter_node`** - Removes invalid data quickly
-2. **`outlier_filter_node`** - Fast outlier removal on cleaner data
-
-This is exactly what the `cleanup.launch.py` does!
-
----
-
-## Building the Package
-
-```bash
-# Navigate to your workspace
-cd ~/ros2_ws
-
-# Build the package
-colcon build --packages-select lidar_filter
-
-# Source the workspace
-source install/setup.bash
-```
-
----
-
-## Visualization
-
-Compare filtered vs unfiltered point clouds in RViz2:
-
-```bash
-# Launch your point cloud source
-ros2 launch <your_package> <your_launch_file>
-
-# In another terminal, launch the cleanup pipeline
-ros2 launch lidar_filter cleanup.launch.py
-
-# Start RViz2
-rviz2
-```
-
-Add these PointCloud2 displays:
-- `/zed/zed_node/point_cloud/cloud_registered` (original, display in red)
-- `/zed/point_cloud/alpha_filtered` (after alpha filter, display in yellow)
-- `/zed/zed_node/point_cloud/cloud_registered/filtered` (final output, display in green)
-
----
-
-## Troubleshooting
-
-### "Too many points removed"
-
-If filters are too aggressive:
-- Increase `voxel_size` (0.05 → 0.1)
-- Decrease `min_points_per_voxel` (2 → 1)
-
-### "Artifacts still visible"
-
-If artifacts remain:
-- Decrease `voxel_size` (0.05 → 0.03)
-- Increase `min_points_per_voxel` (2 → 3)
-- Lower the `alpha_threshold` if using alpha filter
-
-### "Filter is too slow"
-
-To improve performance:
-- Use `outlier_filter_node` for fast real-time filtering
-- Increase `voxel_size` to process fewer voxels
-- Reduce point cloud resolution at the source
-
----
 
 ## Dependencies
 
-- ROS 2 (Humble or later)
-- rclcpp
-- sensor_msgs
-- pcl_ros
-- pcl_conversions
-- PCL (Point Cloud Library)
+ROS 2 Humble+, `rclcpp`, `sensor_msgs`, `visualization_msgs`,
+`pcl_ros`, `pcl_conversions`, `tf2_ros`, `tf2_eigen`, PCL.
 
----
+## Changelog
+
+### 2026-07
+- Runtime parameter updates fixed: the set-parameters callback now
+  applies the *incoming* values (previously it re-read the old values,
+  so every change lagged one call behind).
+- All filter parameters are loaded at startup regardless of enable
+  flags (enabling a filter at runtime no longer starts from
+  uninitialized members).
+- README rewritten: documented `combined_lidar_filter_node` (previously
+  "see source code"), corrected the package/repo naming and removed the
+  outdated ZED-only framing.
 
 ## License
 
 Apache License 2.0
-
----
-
-## Contributing
-
-This is a general-purpose point cloud filtering toolbox. Contributions are welcome! Please maintain:
-- Clear parameter documentation
-- Performance benchmarks for new filters
-- Example usage in the README
