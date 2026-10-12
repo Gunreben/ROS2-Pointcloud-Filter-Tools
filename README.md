@@ -117,9 +117,14 @@ ros2 run lidar_filter combined_lidar_filter_node --ros-args \
 ## Dependencies
 
 ROS 2 Humble+, `rclcpp`, `sensor_msgs`, `visualization_msgs`,
-`pcl_ros`, `pcl_conversions`, `tf2_ros`, `tf2_eigen`, PCL.
+`pcl_conversions`, `tf2_ros`, `tf2_eigen`, PCL.
 
 ## Changelog
+
+### 2026-10
+- Builds on ROS 2 Lyrical: `ament_target_dependencies` (removed there)
+  replaced by a `link_ros_deps` helper; dropped the unused `pcl_ros`
+  dependency.
 
 ### 2026-07
 - Runtime parameter updates fixed: the set-parameters callback now

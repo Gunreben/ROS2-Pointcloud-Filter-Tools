@@ -8,10 +8,21 @@ endif()
 
 # Find dependencies
 find_package(ament_cmake REQUIRED)
+
+# ament_target_dependencies() was removed in Lyrical: link the exported
+# targets (plus include dirs, for older header-only exports) directly.
+function(link_ros_deps target)
+  foreach(dep ${ARGN})
+    if(dep STREQUAL "PCL")
+      continue()
+    endif()
+    target_link_libraries(${target} ${${dep}_TARGETS} ${${dep}_LIBRARIES})
+    target_include_directories(${target} PRIVATE ${${dep}_INCLUDE_DIRS})
+  endforeach()
+endfunction()
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
-find_package(pcl_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_eigen REQUIRED)
@@ -33,7 +44,6 @@ set(LIDAR_FILTER_DEPS
   rclcpp
   sensor_msgs
   pcl_conversions
-  pcl_ros
   visualization_msgs
   tf2_ros
   tf2_eigen
@@ -42,7 +52,7 @@ set(LIDAR_FILTER_DEPS
 
 # Combined filter node
 add_executable(combined_lidar_filter_node src/combined_lidar_filter_node.cpp)
-ament_target_dependencies(combined_lidar_filter_node
+link_ros_deps(combined_lidar_filter_node
   ${LIDAR_FILTER_DEPS}
   visualization_msgs
 )
@@ -50,14 +60,14 @@ target_link_libraries(combined_lidar_filter_node ${PCL_LIBRARIES})
 
 # ZED alpha filter node
 add_executable(zed_alpha_filter_node src/zed_alpha_filter_node.cpp)
-ament_target_dependencies(zed_alpha_filter_node
+link_ros_deps(zed_alpha_filter_node
   ${LIDAR_FILTER_DEPS}
 )
 target_link_libraries(zed_alpha_filter_node ${PCL_LIBRARIES})
 
 # Outlier filter node (no PCL, very fast)
 add_executable(outlier_filter_node src/outlier_filter_node.cpp)
-ament_target_dependencies(outlier_filter_node
+link_ros_deps(outlier_filter_node
   rclcpp
   sensor_msgs
 )
