@@ -32,6 +32,8 @@ find_package(PCL REQUIRED COMPONENTS
   filters 
   segmentation
 )
+# PCL 1.12 (Humble/jammy) does not define Eigen3::Eigen itself
+find_package(Eigen3 REQUIRED NO_MODULE)
 
 # Include directories
 include_directories(
