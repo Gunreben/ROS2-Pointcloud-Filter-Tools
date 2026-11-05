@@ -210,7 +210,9 @@ private:
     pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
 
     seg.setOptimizeCoefficients(optimize_coefficients_);
-    seg.setModelType(pcl::SACMODEL_PLANE);
+    // PERPENDICULAR_PLANE: SACMODEL_PLANE ignores setAxis/setEpsAngle, so RANSAC
+    // could pick a wall instead of the ground (cloud is in target_frame, z up)
+    seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
     seg.setMethodType(pcl::SAC_RANSAC);
     seg.setDistanceThreshold(distance_threshold_);
     seg.setMaxIterations(max_iterations_);
